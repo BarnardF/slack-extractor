@@ -5,6 +5,8 @@ and synchronization to Google Sheets via Google Apps Script.
 """
 import json
 import logging
+import os
+import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -17,6 +19,8 @@ from slack_cache import SlackCache
 DIR = Path(__file__).resolve().parent
 CONFIG_FILE = DIR / "config.json"
 LOG_FILE = DIR / "activity.log"
+VERSION_FILE = DIR / "VERSION"
+GITHUB_REPO = "BarnardF/slack-extractor"
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,6 +31,74 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("slack_sync")
+
+
+def check_and_apply_updates():
+    """Silently checks GitHub Releases for new updates and downloads changed assets."""
+    try:
+        local_version = "none"
+        if VERSION_FILE.exists():
+            local_version = VERSION_FILE.read_text(encoding="utf-8").strip()
+
+        api_url = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+        headers = {"User-Agent": "SlackExtractorUpdater"}
+        resp = requests.get(api_url, headers=headers, timeout=15)
+        if resp.status_code != 200:
+            return
+
+        data = resp.json()
+        remote_version = data.get("tag_name")
+        if not remote_version or remote_version == local_version:
+            return
+
+        logger.info("New version available: %s (current: %s). Downloading update...", remote_version, local_version)
+        assets = data.get("assets", [])
+        requirements_changed = False
+
+        for asset in assets:
+            name = asset.get("name")
+            download_url = asset.get("browser_download_url")
+            # Only update script files, never touch config.json or activity.log
+            if name in ["main.py", "slack_cache.py", "requirements.txt", "install_schedule.bat", "stop_schedule.bat"]:
+                dest = DIR / name
+                r = requests.get(download_url, timeout=30)
+                if r.status_code == 200:
+                    dest.write_bytes(r.content)
+                    if name == "requirements.txt":
+                        requirements_changed = True
+
+        VERSION_FILE.write_text(remote_version, encoding="utf-8")
+        logger.info("Successfully updated to %s.", remote_version)
+
+        # If dependencies changed, install new packages quietly
+        if requirements_changed:
+            installed_marker = DIR / ".venv" / ".installed"
+            if installed_marker.exists():
+                installed_marker.unlink()
+            venv_python = DIR / ".venv" / "Scripts" / "python.exe"
+            if venv_python.exists():
+                subprocess.run(
+                    [
+                        str(venv_python),
+                        "-m",
+                        "pip",
+                        "install",
+                        "--disable-pip-version-check",
+                        "--no-deps",
+                        "--no-build-isolation",
+                        "-r",
+                        str(DIR / "requirements.txt"),
+                    ],
+                    capture_output=True,
+                )
+                installed_marker.write_text("installed", encoding="utf-8")
+
+    except Exception as e:
+        logger.warning("Silent update check skipped: %s", e)
+
+
+# Check for remote updates before running sync
+check_and_apply_updates()
 
 # Load configuration from config.json
 if not CONFIG_FILE.exists():

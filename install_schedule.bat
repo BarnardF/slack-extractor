@@ -3,7 +3,7 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 
 rem ---- Settings ----
-set "REPO=BarnardF/slack-extractor"
+set "PY_VERSION=3.13.17"
 set "TASK_NAME=SlackCacheSync"
 set "DIR=%~dp0"
 if "%DIR:~-1%"=="\" set "DIR=%DIR:~0,-1%"
@@ -12,19 +12,10 @@ set "VENV_PY=%VENV%\Scripts\python.exe"
 set "LOG=%DIR%\activity.log"
 set "VERSION_FILE=%DIR%\VERSION"
 
->> "%LOG%" echo Slack-to-Sheet run log - %DATE% %TIME% (Mode: %1)
+>> "%LOG%" echo Slack-to-Sheet setup log - %DATE% %TIME%
 
-rem =======================================================================
-rem SILENT BACKGROUND RUN (Triggered by Windows Task Scheduler)
-rem =======================================================================
-if /i "%~1"=="--silent" goto :run_silent
-
-rem =======================================================================
-rem INTERACTIVE SETUP / MANUAL RUN (When double-clicked by client)
-rem =======================================================================
-
-rem ---- 0. Check for updates from GitHub Releases ----
-call :check_updates
+rem ---- 0. Check for initial files from GitHub Releases if missing ----
+call :check_bootstrap
 
 rem ---- 1. Check project files ----
 call :step "[1/5] Checking project files"
@@ -70,11 +61,14 @@ call :step "[4/5] Running first sync"
 "%VENV_PY%" "%DIR%\main.py"
 if errorlevel 1 set "ERR=Slack sync execution failed. Check activity.log for details." & goto :fail
 
-rem ---- 5. Schedule the sync ----
+rem ---- 5. Schedule the sync via pythonw (100% windowless & invisible) ----
 call :step "[5/5] Scheduling 12:30 / 17:30"
-set "SCHEDULED_EXE=%DIR%\install_schedule.bat"
+set "PYW=%VENV%\Scripts\pythonw.exe"
+if not exist "%PYW%" set "PYW=%VENV_PY%"
+set "SLACKSYNC_EXE=%PYW%"
+set "SLACKSYNC_SCRIPT=%DIR%\main.py"
 set "SLACKSYNC_DIR=%DIR%"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; try { $action=New-ScheduledTaskAction -Execute $env:SCHEDULED_EXE -Argument '--silent' -WorkingDirectory $env:SLACKSYNC_DIR; $triggers=@((New-ScheduledTaskTrigger -Daily -At 12:30),(New-ScheduledTaskTrigger -Daily -At 17:30)); $settings=New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries; Register-ScheduledTask -TaskName '%TASK_NAME%' -Action $action -Trigger $triggers -Settings $settings -Force | Out-Null } catch { Write-Error $_; exit 1 }" >> "%LOG%" 2>&1
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$ErrorActionPreference='Stop'; try { $action=New-ScheduledTaskAction -Execute $env:SLACKSYNC_EXE -Argument ([char]34 + $env:SLACKSYNC_SCRIPT + [char]34) -WorkingDirectory $env:SLACKSYNC_DIR; $triggers=@((New-ScheduledTaskTrigger -Daily -At 12:30),(New-ScheduledTaskTrigger -Daily -At 17:30)); $settings=New-ScheduledTaskSettingsSet -StartWhenAvailable -AllowStartIfOnBatteries; Register-ScheduledTask -TaskName '%TASK_NAME%' -Action $action -Trigger $triggers -Settings $settings -Force | Out-Null } catch { Write-Error $_; exit 1 }" >> "%LOG%" 2>&1
 if errorlevel 1 set "ERR=Could not create the scheduled task. Check Task Scheduler permissions." & goto :fail
 
 echo.
@@ -85,30 +79,6 @@ echo To stop automatic runs, double-click stop_schedule.bat.
 echo ============================================================
 >> "%LOG%" echo Setup completed successfully.
 pause
-exit /b 0
-
-
-rem =======================================================================
-rem SILENT ROUTINE FOR TASK SCHEDULER
-rem =======================================================================
-:run_silent
-rem 1. Check & apply updates silently
-call :check_updates_silent
-
-rem 2. Check if packages need update after a release
-if not exist "%VENV%\.installed" (
-    if exist "%DIR%\requirements.txt" (
-        "%VENV_PY%" -m pip install --disable-pip-version-check --no-deps --no-build-isolation -r "%DIR%\requirements.txt" >> "%LOG%" 2>&1
-        echo installed > "%VENV%\.installed"
-    )
-)
-
-rem 3. Run sync silently via pythonw
-set "PYW=%VENV%\Scripts\pythonw.exe"
-if not exist "%PYW%" set "PYW=%VENV_PY%"
-if exist "%DIR%\main.py" (
-    "%PYW%" "%DIR%\main.py"
-)
 exit /b 0
 
 
@@ -129,66 +99,22 @@ echo.
 pause
 exit /b 1
 
-:check_updates
-echo [0/5] Checking for updates...
-set "LOCAL_VER=none"
-if exist "%VERSION_FILE%" set /p LOCAL_VER=<"%VERSION_FILE%"
-
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$repo = '%REPO%'; $local = '%LOCAL_VER%'; $dir = '%DIR%';" ^
-    "try {" ^
-    "  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;" ^
-    "  $api = 'https://api.github.com/repos/' + $repo + '/releases/latest';" ^
-    "  $rel = Invoke-RestMethod -Uri $api -Headers @{'User-Agent'='SlackExtractorUpdater'} -TimeoutSec 15;" ^
-    "  $remote = $rel.tag_name;" ^
-    "  if ($remote -and $remote -ne $local) {" ^
-    "    Write-Host ('    New version found: ' + $remote + ' (Current: ' + $local + ')');" ^
-    "    Write-Host '    Downloading update...';" ^
-    "    $reqsChanged = $false;" ^
-    "    foreach ($asset in $rel.assets) {" ^
-    "      $name = $asset.name;" ^
-    "      if ($name -in @('main.py', 'slack_cache.py', 'requirements.txt', 'stop_schedule.bat', 'install_schedule.bat')) {" ^
-    "        $dest = Join-Path $dir $name;" ^
-    "        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $dest;" ^
-    "        if ($name -eq 'requirements.txt') { $reqsChanged = $true }" ^
-    "      }" ^
-    "    }" ^
-    "    Set-Content -Path (Join-Path $dir 'VERSION') -Value $remote;" ^
-    "    if ($reqsChanged -and (Test-Path (Join-Path $dir '.venv\.installed'))) { Remove-Item (Join-Path $dir '.venv\.installed') -Force };" ^
-    "    Write-Host '    Update applied successfully!';" ^
-    "  } else {" ^
-    "    Write-Host ('    Up to date (' + $local + ')');" ^
-    "  }" ^
-    "} catch {" ^
-    "  Write-Host ('    Update check skipped (offline or repo release not yet published)');" ^
-    "}" >> "%LOG%" 2>&1
-exit /b 0
-
-:check_updates_silent
-set "LOCAL_VER=none"
-if exist "%VERSION_FILE%" set /p LOCAL_VER=<"%VERSION_FILE%"
-
-powershell -NoProfile -ExecutionPolicy Bypass -Command ^
-    "$repo = '%REPO%'; $local = '%LOCAL_VER%'; $dir = '%DIR%';" ^
-    "try {" ^
-    "  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;" ^
-    "  $api = 'https://api.github.com/repos/' + $repo + '/releases/latest';" ^
-    "  $rel = Invoke-RestMethod -Uri $api -Headers @{'User-Agent'='SlackExtractorUpdater'} -TimeoutSec 15;" ^
-    "  $remote = $rel.tag_name;" ^
-    "  if ($remote -and $remote -ne $local) {" ^
-    "    $reqsChanged = $false;" ^
-    "    foreach ($asset in $rel.assets) {" ^
-    "      $name = $asset.name;" ^
-    "      if ($name -in @('main.py', 'slack_cache.py', 'requirements.txt', 'stop_schedule.bat', 'install_schedule.bat')) {" ^
-    "        $dest = Join-Path $dir $name;" ^
-    "        Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $dest;" ^
-    "        if ($name -eq 'requirements.txt') { $reqsChanged = $true }" ^
-    "      }" ^
-    "    }" ^
-    "    Set-Content -Path (Join-Path $dir 'VERSION') -Value $remote;" ^
-    "    if ($reqsChanged -and (Test-Path (Join-Path $dir '.venv\.installed'))) { Remove-Item (Join-Path $dir '.venv\.installed') -Force };" ^
-    "  }" ^
-    "} catch {}" >> "%LOG%" 2>&1
+:check_bootstrap
+if not exist "%DIR%\main.py" (
+    echo [0/5] Downloading latest release from GitHub...
+    powershell -NoProfile -ExecutionPolicy Bypass -Command ^
+        "$repo = 'BarnardF/slack-extractor'; $dir = '%DIR%';" ^
+        "try {" ^
+        "  [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12;" ^
+        "  $api = 'https://api.github.com/repos/' + $repo + '/releases/latest';" ^
+        "  $rel = Invoke-RestMethod -Uri $api -Headers @{'User-Agent'='SlackExtractorUpdater'} -TimeoutSec 15;" ^
+        "  foreach ($asset in $rel.assets) {" ^
+        "    if ($asset.name -in @('main.py', 'slack_cache.py', 'requirements.txt', 'stop_schedule.bat', 'VERSION')) {" ^
+        "      Invoke-WebRequest -Uri $asset.browser_download_url -OutFile (Join-Path $dir $asset.name);" ^
+        "    }" ^
+        "  }" ^
+        "} catch { Write-Host 'Bootstrap download failed. Make sure you are connected to the internet.' }"
+)
 exit /b 0
 
 :find_python
