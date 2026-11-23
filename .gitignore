@@ -1,0 +1,7 @@
+# Local configuration and logs
+config.json
+activity.log
+sync.log
+.venv/
+__pycache__/
+*.pyc
