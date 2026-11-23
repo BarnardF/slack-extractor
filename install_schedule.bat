@@ -107,7 +107,7 @@ rem 3. Run sync silently via pythonw
 set "PYW=%VENV%\Scripts\pythonw.exe"
 if not exist "%PYW%" set "PYW=%VENV_PY%"
 if exist "%DIR%\main.py" (
-    "%PYW%" "%DIR%\main.py" >> "%LOG%" 2>&1
+    "%PYW%" "%DIR%\main.py"
 )
 exit /b 0
 
