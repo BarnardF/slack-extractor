@@ -15,10 +15,9 @@ import tempfile
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
 
-import pandas as pd
 import emoji
+import pandas as pd
 from ccl_chromium_reader import ccl_chromium_indexeddb as idb
 from ccl_chromium_reader.storage_formats import ccl_leveldb
 
@@ -79,7 +78,7 @@ def format_attachments(files, redux_files: dict) -> str:
 @dataclass
 class ExtractionResult:
     df: pd.DataFrame
-    names: Dict[str, dict] = field(default_factory=dict)
+    names: dict[str, dict] = field(default_factory=dict)
     current_user: str = "Unknown"
     records_scanned: int = 0
     skipped_stores: int = 0
@@ -142,7 +141,7 @@ class SlackIndexedDb(idb.IndexedDb):
 class SlackWrappedIndexDB(idb.WrappedIndexDB):
     """WrappedIndexDB configured to use SlackIndexedDb as its raw engine."""
 
-    def __init__(self, leveldb_dir: os.PathLike, leveldb_blob_dir: os.PathLike = None):
+    def __init__(self, leveldb_dir: os.PathLike, leveldb_blob_dir: os.PathLike | None = None):
         self._raw_db = SlackIndexedDb(leveldb_dir, leveldb_blob_dir)
         self._multiple_origins = len(set(x.origin for x in self._raw_db.global_metadata.db_ids)) > 1
         self._db_number_lookup = {
@@ -175,7 +174,7 @@ class SlackCache:
             pass
         return max(times, default=0.0)
 
-    def get_candidates(self) -> List[Tuple[Path, float]]:
+    def get_candidates(self) -> list[tuple[Path, float]]:
         """Scans standard Windows locations and returns candidate caches sorted newest first."""
         if sys.platform != "win32":
             raise RuntimeError("SlackCache currently supports Windows only.")
@@ -203,7 +202,7 @@ class SlackCache:
         return found
 
     @staticmethod
-    def _stage_cache(src: Path, tmp_dir: Path) -> Tuple[Path, Optional[Path]]:
+    def _stage_cache(src: Path, tmp_dir: Path) -> tuple[Path, Path | None]:
         """Copies cache to a temporary staging path, excluding active LOCK files."""
         ldb = tmp_dir / src.name
         shutil.copytree(src, ldb, ignore=shutil.ignore_patterns("LOCK"))
@@ -249,7 +248,7 @@ class SlackCache:
             for v in obj:
                 self._collect_names(v, names, depth + 1)
 
-    def _collect_messages(self, obj, channel: Optional[str] = None, depth: int = 0):
+    def _collect_messages(self, obj, channel: str | None = None, depth: int = 0):
         if depth > 40:
             return
         if isinstance(obj, dict):
